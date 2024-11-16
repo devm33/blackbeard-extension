@@ -1,18 +1,23 @@
-import { Octokit } from "@octokit/core";
-import express from "express";
-import { Readable } from "node:stream";
-import { createAckEvent, createConfirmationEvent, createDoneEvent, createTextEvent, getUserConfirmation, prompt } from '@copilot-extensions/preview-sdk';
-import { randomUUID } from "node:crypto";
+import express from 'express';
+import { Octokit } from '@octokit/core';
+import { randomUUID } from 'node:crypto';
+import { createAckEvent, createConfirmationEvent, createDoneEvent, createTextEvent, getUserConfirmation, MessageRole, prompt } from '@copilot-extensions/preview-sdk';
 
-const app = express()
+const app = express();
+app.use(express.json());
 
-app.post("/", express.json(), async (req, res) => {
+app.get('/', (_, res) => {
+    res.send('ack');
+});
+
+app.post('/', async (req, res) => {
+  // Ack chat message to show loading indicator.
   res.write(createAckEvent());
 
-  // Parse the request payload and log it.
+  // Parse the request body.
   const payload = req.body;
 
-  // Check for confirmation
+  // Check for confirmation.
   let userConfirmation = getUserConfirmation(payload);
   if (userConfirmation) {
     console.log("Received a user confirmation", userConfirmation);
@@ -27,45 +32,46 @@ app.post("/", express.json(), async (req, res) => {
   }
 
   // Identify the user, using the GitHub API token provided in the request headers.
-  const tokenForUser = req.get("X-GitHub-Token");
+  const tokenForUser = req.get("X-GitHub-Token") || '';
   const octokit = new Octokit({ auth: tokenForUser });
-  const user = await octokit.request("GET /user");
-  // console.log("User:", user.data.login);
+  const userResponse = await octokit.request("GET /user");
+  const userLogin = userResponse.data.login;
 
-  // console.log("Payload:", payload);
+  // Extract the messages from the payload.
+  const messages: Array<{ role: MessageRole; content: string }> = payload.messages;
 
   // Insert a special pirate-y system message in our message list.
-  const messages = payload.messages;
   // messages.unshift({
   //   role: "system",
   //   content: "You are a helpful assistant that replies to user messages as if you were the Blackbeard Pirate.",
   // });
   messages.unshift({
     role: "system",
-    content: `Start every response with the user's name, which is @${user.data.login}`,
+    content: `Start every response with the user's name, which is @${userLogin}`,
   });
 
   // Use Copilot's LLM to generate a response to the user's messages, with
   // our extra system messages attached.
   const copilotLLMResponse = await prompt({
     token: tokenForUser,
-    messages
+    messages,
   });
   console.log("Copilot LLM response:", copilotLLMResponse);
   res.write(createTextEvent(copilotLLMResponse.message.content));
-  let confirm = createConfirmationEvent({
+
+  // Send a confirmation to the user.
+  res.write(createConfirmationEvent({
     id: randomUUID(),
     title: "Confirmation title",
     message: "Confirmation message",
-  });
-  console.log("Confirmation:", confirm);
-  res.write(confirm);
+  }));
 
+  // End chat response.
   res.write(createDoneEvent());
   res.end();
-})
+});
 
-const port = Number(process.env.PORT || '3000')
+const port = Number(process.env.PORT || '3000');
 app.listen(port, () => {
-  console.log(`Server running on port ${port}`)
+  console.log(`Server running on port ${port}`);
 });
